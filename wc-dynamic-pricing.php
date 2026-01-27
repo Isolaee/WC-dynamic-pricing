@@ -143,3 +143,68 @@ function wcdp_cart_item_price($cart_object) {
     }
 }
 add_action('woocommerce_before_calculate_totals', 'wcdp_cart_item_price', 9999, 1);
+
+/**
+ * One-time diagnostic: dump all meta keys for product 773 on admin_init.
+ * This runs once to help identify the correct meta key for hintapyynto_ot.
+ * Check WooCommerce > Status > Logs > wcdp-debug for output.
+ */
+function wcdp_diagnose_meta() {
+    $product_id = 773;
+
+    // Only run this diagnostic once per deploy — use a transient as flag.
+    if (get_transient('wcdp_diag_done')) {
+        return;
+    }
+    set_transient('wcdp_diag_done', true, HOUR_IN_SECONDS);
+
+    wcdp_log("=== DIAGNOSTIC START for post {$product_id} ===");
+
+    // 1. Check post type
+    $post_type = get_post_type($product_id);
+    wcdp_log("Post type for {$product_id}: " . var_export($post_type, true));
+
+    // 2. Check if WooCommerce uses HPOS (custom order tables) which stores product data differently
+    wcdp_log("HPOS enabled: " . var_export(
+        class_exists('Automattic\WooCommerce\Utilities\OrderUtil')
+            && method_exists('Automattic\WooCommerce\Utilities\OrderUtil', 'custom_orders_table_usage_is_enabled')
+            && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled(),
+        true
+    ));
+
+    // 3. Dump all post_meta keys for this product
+    $all_meta = get_post_meta($product_id);
+    if ($all_meta) {
+        wcdp_log("All meta keys for post {$product_id}: " . implode(', ', array_keys($all_meta)));
+
+        // Look for anything containing 'hinta'
+        foreach ($all_meta as $key => $values) {
+            if (stripos($key, 'hinta') !== false) {
+                wcdp_log("  MATCH meta key '{$key}' => " . var_export($values, true));
+            }
+        }
+    } else {
+        wcdp_log("No post_meta found for post {$product_id}. Product may use custom tables (HPOS) or the post ID is wrong.");
+    }
+
+    // 4. Try get_field with different approaches
+    if (function_exists('get_field')) {
+        $v1 = get_field('hintapyynto_ot', $product_id);
+        wcdp_log("get_field('hintapyynto_ot', {$product_id}) = " . var_export($v1, true));
+
+        // ACF sometimes needs the post object instead of ID
+        $v2 = get_field('hintapyynto_ot', get_post($product_id));
+        wcdp_log("get_field('hintapyynto_ot', get_post({$product_id})) = " . var_export($v2, true));
+    }
+
+    // 5. Try direct post_meta access (bypassing ACF)
+    $v3 = get_post_meta($product_id, 'hintapyynto_ot', true);
+    wcdp_log("get_post_meta({$product_id}, 'hintapyynto_ot', true) = " . var_export($v3, true));
+
+    // Also try with underscore prefix (ACF stores with _ prefix for internal reference)
+    $v4 = get_post_meta($product_id, '_hintapyynto_ot', true);
+    wcdp_log("get_post_meta({$product_id}, '_hintapyynto_ot', true) = " . var_export($v4, true));
+
+    wcdp_log("=== DIAGNOSTIC END ===");
+}
+add_action('init', 'wcdp_diagnose_meta');
