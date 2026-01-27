@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WC Dynamic Pricing
  * Description: Dynamically calculates pricing for Osaketori-ilmoitus based on ACF field hintapyynto_ot.
- * Version: 2.0.0
+ * Version: 2.1.0
  * Requires Plugins: woocommerce, advanced-custom-fields
  */
 
@@ -10,7 +10,6 @@ defined('ABSPATH') || exit;
 
 /**
  * Log debug messages to WooCommerce > Status > Logs > wcdp-debug.
- * Each message is logged only once per request via a static guard.
  */
 function wcdp_log(string $message): void {
     if (function_exists('wc_get_logger')) {
@@ -28,16 +27,51 @@ function wcdp_calculate_price(float $hintapyynto): float {
 }
 
 /**
+ * Clear the bv_pending_post_id from the WC session.
+ */
+function wcdp_clear_session(): void {
+    if (function_exists('WC') && WC()->session) {
+        $old = WC()->session->get('bv_pending_post_id');
+        if ($old) {
+            WC()->session->__unset('bv_pending_post_id');
+            wcdp_log("[session_clear] Cleared bv_pending_post_id (was: {$old})");
+        }
+    }
+}
+
+/**
  * Get the listing post ID from the WC session (set by BV Listing Manager
  * when the user goes through /process-listing).
  *
- * Returns 0 if unavailable.
+ * Returns 0 if unavailable or if the cart doesn't contain product 773.
  */
 function wcdp_get_listing_post_id(): int {
     if (!function_exists('WC') || !WC()->session) {
         return 0;
     }
-    return (int) WC()->session->get('bv_pending_post_id');
+
+    $listing_id = (int) WC()->session->get('bv_pending_post_id');
+    if ($listing_id <= 0) {
+        return 0;
+    }
+
+    // Verify the listing post still exists and is a valid draft/pending post.
+    $post = get_post($listing_id);
+    if (!$post || $post->post_type !== 'post') {
+        wcdp_log("[get_listing_post_id] Post {$listing_id} not found or wrong type, clearing session.");
+        wcdp_clear_session();
+        return 0;
+    }
+
+    // If the listing is already published, the payment already went through —
+    // the session is stale from a previous transaction.
+    if ($post->post_status === 'publish') {
+        wcdp_log("[get_listing_post_id] Post {$listing_id} is already published (stale session), clearing.");
+        wcdp_clear_session();
+        return 0;
+    }
+
+    return $listing_id;
 }
 
 /**
@@ -53,6 +87,10 @@ function wcdp_get_hintapyynto(int $listing_post_id): float {
     }
     return (float) get_field('hintapyynto_ot', $listing_post_id);
 }
+
+/* =============================================================================
+   PRICE FILTERS
+============================================================================= */
 
 /**
  * Filter product price for product ID 773.
@@ -74,25 +112,19 @@ function wcdp_dynamic_price($price, $product) {
 
     $listing_id = wcdp_get_listing_post_id();
     if ($should_log) {
-        wcdp_log("[{$filter_name}] Product 773. Listing post ID from session: {$listing_id}. Original price: {$price}");
+        wcdp_log("[{$filter_name}] Product 773. Listing post ID: {$listing_id}. Original price: {$price}");
     }
 
     if ($listing_id <= 0) {
-        if ($should_log) {
-            wcdp_log("[{$filter_name}] No listing post ID in session, returning original price.");
-        }
         return $price;
     }
 
     $hintapyynto = wcdp_get_hintapyynto($listing_id);
     if ($should_log) {
-        wcdp_log("[{$filter_name}] hintapyynto_ot from listing post {$listing_id}: {$hintapyynto}");
+        wcdp_log("[{$filter_name}] hintapyynto_ot from listing {$listing_id}: {$hintapyynto}");
     }
 
     if ($hintapyynto <= 0) {
-        if ($should_log) {
-            wcdp_log("[{$filter_name}] hintapyynto_ot <= 0, returning original price.");
-        }
         return $price;
     }
 
@@ -112,8 +144,7 @@ add_filter('woocommerce_product_get_sale_price', 'wcdp_dynamic_price', 9999, 2);
 function wcdp_dynamic_price_html($price_html, $product) {
     static $logged = false;
 
-    $product_id = $product->get_id();
-    if ((int) $product_id !== 773) {
+    if ((int) $product->get_id() !== 773) {
         return $price_html;
     }
 
@@ -123,10 +154,6 @@ function wcdp_dynamic_price_html($price_html, $product) {
     }
 
     $listing_id = wcdp_get_listing_post_id();
-    if ($should_log) {
-        wcdp_log("[woocommerce_get_price_html] Product 773. Listing post ID: {$listing_id}");
-    }
-
     if ($listing_id <= 0) {
         return $price_html;
     }
@@ -139,7 +166,7 @@ function wcdp_dynamic_price_html($price_html, $product) {
     $calculated = wcdp_calculate_price($hintapyynto);
     $new_html = wc_price($calculated);
     if ($should_log) {
-        wcdp_log("[woocommerce_get_price_html] Returning price HTML: {$new_html}");
+        wcdp_log("[woocommerce_get_price_html] Listing {$listing_id}, price HTML: {$new_html}");
     }
     return $new_html;
 }
@@ -147,7 +174,6 @@ add_filter('woocommerce_get_price_html', 'wcdp_dynamic_price_html', 9999, 2);
 
 /**
  * Override the cart item price for product 773 during cart totals calculation.
- * This ensures checkout/payment uses the dynamic price.
  */
 function wcdp_cart_item_price($cart_object) {
     static $logged = false;
@@ -162,26 +188,16 @@ function wcdp_cart_item_price($cart_object) {
     }
 
     $listing_id = wcdp_get_listing_post_id();
-    if ($should_log) {
-        wcdp_log("[woocommerce_before_calculate_totals] Listing post ID from session: {$listing_id}");
-    }
-
     if ($listing_id <= 0) {
-        if ($should_log) {
-            wcdp_log("[woocommerce_before_calculate_totals] No listing post ID, skipping.");
-        }
         return;
     }
 
     $hintapyynto = wcdp_get_hintapyynto($listing_id);
     if ($should_log) {
-        wcdp_log("[woocommerce_before_calculate_totals] hintapyynto_ot from listing {$listing_id}: {$hintapyynto}");
+        wcdp_log("[cart_totals] Listing {$listing_id}, hintapyynto_ot: {$hintapyynto}");
     }
 
     if ($hintapyynto <= 0) {
-        if ($should_log) {
-            wcdp_log("[woocommerce_before_calculate_totals] hintapyynto_ot <= 0, skipping.");
-        }
         return;
     }
 
@@ -193,8 +209,57 @@ function wcdp_cart_item_price($cart_object) {
         }
         $cart_item['data']->set_price($calculated);
         if ($should_log) {
-            wcdp_log("[woocommerce_before_calculate_totals] Set cart price to {$calculated} for product 773");
+            wcdp_log("[cart_totals] Set cart price to {$calculated} for product 773");
         }
     }
 }
 add_action('woocommerce_before_calculate_totals', 'wcdp_cart_item_price', 9999, 1);
+
+/* =============================================================================
+   SESSION CLEANUP — clear bv_pending_post_id after payment or cancellation
+============================================================================= */
+
+/**
+ * Clear session after successful payment.
+ * (BV Listing Manager also clears it, but this is a safety net.)
+ */
+add_action('woocommerce_payment_complete', function ($order_id) {
+    wcdp_log("[payment_complete] Order {$order_id} — clearing session.");
+    wcdp_clear_session();
+});
+add_action('woocommerce_thankyou', function ($order_id) {
+    wcdp_log("[thankyou] Order {$order_id} — clearing session.");
+    wcdp_clear_session();
+});
+
+/**
+ * Clear session when order reaches a terminal failed/cancelled status.
+ */
+add_action('woocommerce_order_status_cancelled', function ($order_id) {
+    wcdp_log("[order_cancelled] Order {$order_id} — clearing session.");
+    wcdp_clear_session();
+});
+add_action('woocommerce_order_status_failed', function ($order_id) {
+    wcdp_log("[order_failed] Order {$order_id} — clearing session.");
+    wcdp_clear_session();
+});
+
+/**
+ * Clear session when the cart is emptied (user removes items or starts fresh).
+ */
+add_action('woocommerce_cart_emptied', function () {
+    wcdp_log("[cart_emptied] Cart was emptied — clearing session.");
+    wcdp_clear_session();
+});
+
+/**
+ * When product 773 is specifically removed from the cart, clear the session
+ * since the listing checkout flow was abandoned.
+ */
+add_action('woocommerce_remove_cart_item', function ($cart_item_key, $cart) {
+    $item = $cart->get_cart_item($cart_item_key);
+    if ($item && (int) $item['product_id'] === 773) {
+        wcdp_log("[remove_cart_item] Product 773 removed from cart — clearing session.");
+        wcdp_clear_session();
+    }
+}, 10, 2);
