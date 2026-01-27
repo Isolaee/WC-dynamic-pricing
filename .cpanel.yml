@@ -1,0 +1,7 @@
+---
+deployment:
+  tasks:
+    - export DEPLOYPATH=/home/growthrocket2/public_html/wp-content/plugins/wc-dynamic-pricing
+    - rsync -av --dirs * $DEPLOYPATH/
+    - find $DEPLOYPATH -type f -exec chmod 644 {} \;
+    - find $DEPLOYPATH -type d -exec chmod 755 {} \;
