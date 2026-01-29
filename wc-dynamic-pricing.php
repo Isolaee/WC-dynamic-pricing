@@ -9,6 +9,13 @@
 defined('ABSPATH') || exit;
 
 /**
+ * Plugin constants — adjust these values as needed.
+ */
+define('WCDP_PRICING_PERCENT', 3);           // Percentage of hintapyynto_ot (3 = 3%)
+define('WCDP_MINIMUM_PRICE', 99);            // Minimum price in EUR
+define('WCDP_TARGET_PRODUCT_ID', 773);       // WooCommerce product ID for dynamic pricing
+
+/**
  * Log debug messages to WooCommerce > Status > Logs > wcdp-debug.
  */
 function wcdp_log(string $message): void {
@@ -23,7 +30,7 @@ function wcdp_log(string $message): void {
  * Calculate dynamic price: 5% of hintapyynto_ot, minimum 99 EUR.
  */
 function wcdp_calculate_price(float $hintapyynto): float {
-    return max(99, $hintapyynto * 0.05);
+    return max(WCDP_MINIMUM_PRICE, $hintapyynto * (WCDP_PRICING_PERCENT / 100));
 }
 
 /**
@@ -133,7 +140,7 @@ function wcdp_cart_item_price($cart_object) {
     $calculated = wcdp_calculate_price($hintapyynto);
 
     foreach ($cart_object->get_cart() as $cart_item) {
-        if ((int) $cart_item['product_id'] !== 773) {
+        if ((int) $cart_item['product_id'] !== WCDP_TARGET_PRODUCT_ID) {
             continue;
         }
         $cart_item['data']->set_price($calculated);
@@ -173,7 +180,7 @@ add_action('woocommerce_cart_emptied', function () {
 
 add_action('woocommerce_remove_cart_item', function ($cart_item_key, $cart) {
     $item = $cart->get_cart_item($cart_item_key);
-    if ($item && (int) $item['product_id'] === 773) {
+    if ($item && (int) $item['product_id'] === WCDP_TARGET_PRODUCT_ID) {
         wcdp_log("[remove_cart_item] Product 773 removed from cart — clearing session.");
         wcdp_clear_session();
     }
