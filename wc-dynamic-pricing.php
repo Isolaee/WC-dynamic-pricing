@@ -11,9 +11,23 @@ defined('ABSPATH') || exit;
 /**
  * Plugin constants — adjust these values as needed.
  */
-define('WCDP_PRICING_PERCENT', 3);           // Percentage of hintapyynto_ot (3 = 3%)
-define('WCDP_MINIMUM_PRICE', 99);            // Minimum price in EUR
+define('WCDP_PRICING_PERCENT', 3);           // Default percentage (fallback)
+define('WCDP_MINIMUM_PRICE', 99);            // Default minimum price (fallback)
 define('WCDP_TARGET_PRODUCT_ID', 773);       // WooCommerce product ID for dynamic pricing
+
+/**
+ * Get the pricing percentage from settings, with constant as fallback.
+ */
+function wcdp_get_pricing_percent(): float {
+    return (float) get_option('wcdp_pricing_percent', WCDP_PRICING_PERCENT);
+}
+
+/**
+ * Get the minimum price from settings, with constant as fallback.
+ */
+function wcdp_get_minimum_price(): float {
+    return (float) get_option('wcdp_minimum_price', WCDP_MINIMUM_PRICE);
+}
 
 /**
  * Log debug messages to WooCommerce > Status > Logs > wcdp-debug.
@@ -30,7 +44,9 @@ function wcdp_log(string $message): void {
  * Calculate dynamic price: 5% of hintapyynto_ot, minimum 99 EUR.
  */
 function wcdp_calculate_price(float $hintapyynto): float {
-    return max(WCDP_MINIMUM_PRICE, $hintapyynto * (WCDP_PRICING_PERCENT / 100));
+    $percent = wcdp_get_pricing_percent();
+    $minimum = wcdp_get_minimum_price();
+    return max($minimum, $hintapyynto * ($percent / 100));
 }
 
 /**
@@ -185,3 +201,73 @@ add_action('woocommerce_remove_cart_item', function ($cart_item_key, $cart) {
         wcdp_clear_session();
     }
 }, 10, 2);
+
+/* =============================================================================
+   ADMIN SETTINGS PAGE
+   WooCommerce > Settings > Dynamic Pricing
+============================================================================= */
+
+/**
+ * Add "Dynamic Pricing" tab to WooCommerce settings.
+ */
+add_filter('woocommerce_settings_tabs_array', function ($tabs) {
+    $tabs['wcdp_settings'] = __('Dynamic Pricing', 'wc-dynamic-pricing');
+    return $tabs;
+}, 50);
+
+/**
+ * Output the settings fields for the Dynamic Pricing tab.
+ */
+add_action('woocommerce_settings_tabs_wcdp_settings', function () {
+    woocommerce_admin_fields(wcdp_get_settings());
+});
+
+/**
+ * Save the settings when the Dynamic Pricing tab is saved.
+ */
+add_action('woocommerce_update_options_wcdp_settings', function () {
+    woocommerce_update_options(wcdp_get_settings());
+});
+
+/**
+ * Define the settings fields for the Dynamic Pricing tab.
+ */
+function wcdp_get_settings(): array {
+    return [
+        [
+            'title' => __('Dynamic Pricing Settings', 'wc-dynamic-pricing'),
+            'type'  => 'title',
+            'desc'  => __('Configure the dynamic pricing calculation for listing payments.', 'wc-dynamic-pricing'),
+            'id'    => 'wcdp_settings_section',
+        ],
+        [
+            'title'    => __('Pricing Percentage (%)', 'wc-dynamic-pricing'),
+            'desc'     => __('Percentage of hintapyynto_ot to calculate the price.', 'wc-dynamic-pricing'),
+            'id'       => 'wcdp_pricing_percent',
+            'type'     => 'number',
+            'default'  => WCDP_PRICING_PERCENT,
+            'css'      => 'width: 100px;',
+            'custom_attributes' => [
+                'min'  => '0',
+                'max'  => '100',
+                'step' => '0.1',
+            ],
+        ],
+        [
+            'title'    => __('Minimum Price (EUR)', 'wc-dynamic-pricing'),
+            'desc'     => __('The minimum price regardless of the percentage calculation.', 'wc-dynamic-pricing'),
+            'id'       => 'wcdp_minimum_price',
+            'type'     => 'number',
+            'default'  => WCDP_MINIMUM_PRICE,
+            'css'      => 'width: 100px;',
+            'custom_attributes' => [
+                'min'  => '0',
+                'step' => '1',
+            ],
+        ],
+        [
+            'type' => 'sectionend',
+            'id'   => 'wcdp_settings_section',
+        ],
+    ];
+}
