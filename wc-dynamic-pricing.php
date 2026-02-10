@@ -13,7 +13,7 @@ defined('ABSPATH') || exit;
  */
 define('WCDP_PRICING_PERCENT', 3);           // Default percentage (fallback)
 define('WCDP_MINIMUM_PRICE', 99);            // Default minimum price (fallback)
-define('WCDP_TARGET_PRODUCT_ID', 773);       // WooCommerce product ID for dynamic pricing
+define('WCDP_TARGET_PRODUCT_IDS', [773, 2834]); // WooCommerce product IDs for dynamic pricing
 
 /**
  * Get the pricing percentage from settings, with constant as fallback.
@@ -156,12 +156,12 @@ function wcdp_cart_item_price($cart_object) {
     $calculated = wcdp_calculate_price($hintapyynto);
 
     foreach ($cart_object->get_cart() as $cart_item) {
-        if ((int) $cart_item['product_id'] !== WCDP_TARGET_PRODUCT_ID) {
+        if (!in_array((int) $cart_item['product_id'], WCDP_TARGET_PRODUCT_IDS, true)) {
             continue;
         }
         $cart_item['data']->set_price($calculated);
         if ($should_log) {
-            wcdp_log("[cart_totals] Set cart price to {$calculated} for product 773 (listing {$listing_id})");
+            wcdp_log("[cart_totals] Set cart price to {$calculated} for product {$cart_item['product_id']} (listing {$listing_id})");
         }
     }
 }
@@ -196,7 +196,7 @@ add_action('woocommerce_cart_emptied', function () {
 
 add_action('woocommerce_remove_cart_item', function ($cart_item_key, $cart) {
     $item = $cart->get_cart_item($cart_item_key);
-    if ($item && (int) $item['product_id'] === WCDP_TARGET_PRODUCT_ID) {
+    if ($item && in_array((int) $item['product_id'], WCDP_TARGET_PRODUCT_IDS, true)) {
         wcdp_log("[remove_cart_item] Product 773 removed from cart — clearing session.");
         wcdp_clear_session();
     }
