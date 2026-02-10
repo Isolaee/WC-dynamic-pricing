@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: WC Dynamic Pricing
- * Description: Dynamically calculates pricing for Osaketori-ilmoitus based on ACF field hintapyynto_ot.
+ * Description: Dynamically calculates pricing for Osaketori-ilmoitus based on ACF field hintapyynto.
  * Version: 2.2.0
  * Requires Plugins: woocommerce, advanced-custom-fields
  */
@@ -41,7 +41,7 @@ function wcdp_log(string $message): void {
 }
 
 /**
- * Calculate dynamic price: 5% of hintapyynto_ot, minimum 99 EUR.
+ * Calculate dynamic price: 5% of hintapyynto, minimum 99 EUR.
  */
 function wcdp_calculate_price(float $hintapyynto): float {
     $percent = wcdp_get_pricing_percent();
@@ -98,7 +98,7 @@ function wcdp_get_listing_post_id(): int {
 }
 
 /**
- * Read hintapyynto_ot from the listing post.
+ * Read hintapyynto from the listing post.
  * Returns 0.0 if not found or not positive.
  */
 function wcdp_get_hintapyynto(int $listing_post_id): float {
@@ -108,7 +108,7 @@ function wcdp_get_hintapyynto(int $listing_post_id): float {
     if (!function_exists('get_field')) {
         return 0.0;
     }
-    return (float) get_field('hintapyynto_ot', $listing_post_id);
+    return (float) get_field('hintapyynto', $listing_post_id);
 }
 
 /* =============================================================================
@@ -143,12 +143,12 @@ function wcdp_cart_item_price($cart_object) {
 
     $hintapyynto = wcdp_get_hintapyynto($listing_id);
     if ($should_log) {
-        wcdp_log("[cart_totals] Listing {$listing_id}, hintapyynto_ot: {$hintapyynto}");
+        wcdp_log("[cart_totals] Listing {$listing_id}, hintapyynto: {$hintapyynto}");
     }
 
     if ($hintapyynto <= 0) {
         if ($should_log) {
-            wcdp_log("[cart_totals] hintapyynto_ot <= 0, skipping.");
+            wcdp_log("[cart_totals] hintapyynto <= 0, skipping.");
         }
         return;
     }
@@ -242,7 +242,7 @@ function wcdp_get_settings(): array {
         ],
         [
             'title'    => __('Pricing Percentage (%)', 'wc-dynamic-pricing'),
-            'desc'     => __('Percentage of hintapyynto_ot to calculate the price.', 'wc-dynamic-pricing'),
+            'desc'     => __('Percentage of hintapyynto to calculate the price.', 'wc-dynamic-pricing'),
             'id'       => 'wcdp_pricing_percent',
             'type'     => 'number',
             'default'  => WCDP_PRICING_PERCENT,
