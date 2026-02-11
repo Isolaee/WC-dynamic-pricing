@@ -14,17 +14,30 @@ defined('ABSPATH') || exit;
 define('WCDP_TARGET_PRODUCT_IDS', [773, 2834]); // WooCommerce product IDs for dynamic pricing
 
 /**
- * Step-based pricing tiers.
+ * Default step-based pricing tiers (fallback if no DB option exists).
  * Each entry: [threshold, price] — sorted ascending by threshold.
- * Price is determined by the highest threshold that hintapyynto meets or exceeds.
  */
-define('WCDP_PRICING_TIERS', [
-    [0,       0],    // 0€ up to 100k€
-    [100000,  29],   // 29€ from 100k€
-    [300000,  69],   // 69€ from 300k€
-    [600000,  129],  // 129€ from 600k€
-    [1000000, 199],  // 199€ from 1M€
+define('WCDP_DEFAULT_TIERS', [
+    [0,       0],
+    [100000,  29],
+    [300000,  69],
+    [600000,  129],
+    [1000000, 199],
 ]);
+
+/**
+ * Get the pricing tiers from the database, falling back to defaults.
+ * Returns array of [threshold, price] pairs sorted by threshold ascending.
+ */
+function wcdp_get_pricing_tiers(): array {
+    $saved = get_option('wcdp_pricing_tiers');
+    if (!is_array($saved) || empty($saved)) {
+        return WCDP_DEFAULT_TIERS;
+    }
+    // Ensure sorted by threshold ascending.
+    usort($saved, fn($a, $b) => $a[0] <=> $b[0]);
+    return $saved;
+}
 
 /**
  * Log debug messages to WooCommerce > Status > Logs > wcdp-debug.
@@ -42,7 +55,7 @@ function wcdp_log(string $message): void {
  */
 function wcdp_calculate_price(float $hintapyynto): float {
     $price = 0;
-    foreach (WCDP_PRICING_TIERS as [$threshold, $tier_price]) {
+    foreach (wcdp_get_pricing_tiers() as [$threshold, $tier_price]) {
         if ($hintapyynto >= $threshold) {
             $price = $tier_price;
         }
@@ -220,41 +233,77 @@ add_filter('woocommerce_settings_tabs_array', function ($tabs) {
  * Output the settings fields for the Dynamic Pricing tab.
  */
 add_action('woocommerce_settings_tabs_wcdp_settings', function () {
-    woocommerce_admin_fields(wcdp_get_settings());
+    $tiers = wcdp_get_pricing_tiers();
+    ?>
+    <h2><?php esc_html_e('Step-Based Pricing Tiers', 'wc-dynamic-pricing'); ?></h2>
+    <p><?php esc_html_e('Set the price for each hintapyyntö threshold. Price applies when hintapyyntö is at or above the threshold.', 'wc-dynamic-pricing'); ?></p>
+    <table class="wc_input_table widefat" id="wcdp-tiers-table">
+        <thead>
+            <tr>
+                <th><?php esc_html_e('Hintapyyntö from (€)', 'wc-dynamic-pricing'); ?></th>
+                <th><?php esc_html_e('Price (€)', 'wc-dynamic-pricing'); ?></th>
+                <th style="width:50px;">&nbsp;</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php foreach ($tiers as $i => [$threshold, $tier_price]) : ?>
+            <tr>
+                <td><input type="number" name="wcdp_tier_threshold[]" value="<?php echo esc_attr($threshold); ?>" min="0" step="1" style="width:100%;" /></td>
+                <td><input type="number" name="wcdp_tier_price[]" value="<?php echo esc_attr($tier_price); ?>" min="0" step="1" style="width:100%;" /></td>
+                <td><a href="#" class="wcdp-remove-tier" style="color:#a00;text-decoration:none;font-size:18px;" title="<?php esc_attr_e('Remove', 'wc-dynamic-pricing'); ?>">&times;</a></td>
+            </tr>
+            <?php endforeach; ?>
+        </tbody>
+        <tfoot>
+            <tr>
+                <td colspan="3">
+                    <a href="#" id="wcdp-add-tier" class="button"><?php esc_html_e('+ Add tier', 'wc-dynamic-pricing'); ?></a>
+                </td>
+            </tr>
+        </tfoot>
+    </table>
+    <?php wp_nonce_field('wcdp_save_tiers', 'wcdp_tiers_nonce'); ?>
+    <script>
+    jQuery(function($) {
+        $('#wcdp-add-tier').on('click', function(e) {
+            e.preventDefault();
+            var row = '<tr>' +
+                '<td><input type="number" name="wcdp_tier_threshold[]" value="0" min="0" step="1" style="width:100%;" /></td>' +
+                '<td><input type="number" name="wcdp_tier_price[]" value="0" min="0" step="1" style="width:100%;" /></td>' +
+                '<td><a href="#" class="wcdp-remove-tier" style="color:#a00;text-decoration:none;font-size:18px;" title="Remove">&times;</a></td>' +
+                '</tr>';
+            $('#wcdp-tiers-table tbody').append(row);
+        });
+        $(document).on('click', '.wcdp-remove-tier', function(e) {
+            e.preventDefault();
+            $(this).closest('tr').remove();
+        });
+    });
+    </script>
+    <?php
 });
 
 /**
- * Save the settings when the Dynamic Pricing tab is saved.
+ * Save the pricing tiers when the Dynamic Pricing tab is saved.
  */
 add_action('woocommerce_update_options_wcdp_settings', function () {
-    woocommerce_update_options(wcdp_get_settings());
-});
-
-/**
- * Define the settings fields for the Dynamic Pricing tab.
- */
-function wcdp_get_settings(): array {
-    $tier_desc = __('Step-based pricing tiers (based on hintapyyntö):', 'wc-dynamic-pricing') . '<br>';
-    foreach (WCDP_PRICING_TIERS as [$threshold, $tier_price]) {
-        $threshold_fmt = number_format($threshold, 0, ',', ' ');
-        if ($threshold === 0) {
-            $tier_desc .= "• {$tier_price}€ — under 100 000€<br>";
-        } else {
-            $tier_desc .= "• {$tier_price}€ — from {$threshold_fmt}€<br>";
-        }
+    if (!isset($_POST['wcdp_tiers_nonce']) || !wp_verify_nonce($_POST['wcdp_tiers_nonce'], 'wcdp_save_tiers')) {
+        return;
     }
-    $tier_desc .= '<br>' . __('To change tiers, edit WCDP_PRICING_TIERS in the plugin code.', 'wc-dynamic-pricing');
 
-    return [
-        [
-            'title' => __('Dynamic Pricing Settings', 'wc-dynamic-pricing'),
-            'type'  => 'title',
-            'desc'  => $tier_desc,
-            'id'    => 'wcdp_settings_section',
-        ],
-        [
-            'type' => 'sectionend',
-            'id'   => 'wcdp_settings_section',
-        ],
-    ];
-}
+    $thresholds = isset($_POST['wcdp_tier_threshold']) ? array_map('intval', $_POST['wcdp_tier_threshold']) : [];
+    $prices     = isset($_POST['wcdp_tier_price'])     ? array_map('intval', $_POST['wcdp_tier_price'])     : [];
+
+    $tiers = [];
+    foreach ($thresholds as $i => $threshold) {
+        if (!isset($prices[$i])) {
+            continue;
+        }
+        $tiers[] = [max(0, $threshold), max(0, $prices[$i])];
+    }
+
+    // Sort by threshold ascending.
+    usort($tiers, fn($a, $b) => $a[0] <=> $b[0]);
+
+    update_option('wcdp_pricing_tiers', $tiers);
+});
