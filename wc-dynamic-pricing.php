@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WC Dynamic Pricing
- * Description: Dynamically calculates pricing for Osaketori-ilmoitus based on ACF field hintapyynto.
- * Version: 2.2.0
+ * Description: Step-based pricing for Osaketori-ilmoitus based on ACF field hintapyynto.
+ * Version: 3.0.0
  * Requires Plugins: woocommerce, advanced-custom-fields
  */
 
@@ -11,23 +11,20 @@ defined('ABSPATH') || exit;
 /**
  * Plugin constants — adjust these values as needed.
  */
-define('WCDP_PRICING_PERCENT', 3);           // Default percentage (fallback)
-define('WCDP_MINIMUM_PRICE', 99);            // Default minimum price (fallback)
 define('WCDP_TARGET_PRODUCT_IDS', [773, 2834]); // WooCommerce product IDs for dynamic pricing
 
 /**
- * Get the pricing percentage from settings, with constant as fallback.
+ * Step-based pricing tiers.
+ * Each entry: [threshold, price] — sorted ascending by threshold.
+ * Price is determined by the highest threshold that hintapyynto meets or exceeds.
  */
-function wcdp_get_pricing_percent(): float {
-    return (float) get_option('wcdp_pricing_percent', WCDP_PRICING_PERCENT);
-}
-
-/**
- * Get the minimum price from settings, with constant as fallback.
- */
-function wcdp_get_minimum_price(): float {
-    return (float) get_option('wcdp_minimum_price', WCDP_MINIMUM_PRICE);
-}
+define('WCDP_PRICING_TIERS', [
+    [0,       0],    // 0€ up to 100k€
+    [100000,  29],   // 29€ from 100k€
+    [300000,  69],   // 69€ from 300k€
+    [600000,  129],  // 129€ from 600k€
+    [1000000, 199],  // 199€ from 1M€
+]);
 
 /**
  * Log debug messages to WooCommerce > Status > Logs > wcdp-debug.
@@ -41,12 +38,16 @@ function wcdp_log(string $message): void {
 }
 
 /**
- * Calculate dynamic price: 5% of hintapyynto, minimum 99 EUR.
+ * Calculate dynamic price based on step-based pricing tiers.
  */
 function wcdp_calculate_price(float $hintapyynto): float {
-    $percent = wcdp_get_pricing_percent();
-    $minimum = wcdp_get_minimum_price();
-    return max($minimum, $hintapyynto * ($percent / 100));
+    $price = 0;
+    foreach (WCDP_PRICING_TIERS as [$threshold, $tier_price]) {
+        if ($hintapyynto >= $threshold) {
+            $price = $tier_price;
+        }
+    }
+    return (float) $price;
 }
 
 /**
@@ -233,37 +234,23 @@ add_action('woocommerce_update_options_wcdp_settings', function () {
  * Define the settings fields for the Dynamic Pricing tab.
  */
 function wcdp_get_settings(): array {
+    $tier_desc = __('Step-based pricing tiers (based on hintapyyntö):', 'wc-dynamic-pricing') . '<br>';
+    foreach (WCDP_PRICING_TIERS as [$threshold, $tier_price]) {
+        $threshold_fmt = number_format($threshold, 0, ',', ' ');
+        if ($threshold === 0) {
+            $tier_desc .= "• {$tier_price}€ — under 100 000€<br>";
+        } else {
+            $tier_desc .= "• {$tier_price}€ — from {$threshold_fmt}€<br>";
+        }
+    }
+    $tier_desc .= '<br>' . __('To change tiers, edit WCDP_PRICING_TIERS in the plugin code.', 'wc-dynamic-pricing');
+
     return [
         [
             'title' => __('Dynamic Pricing Settings', 'wc-dynamic-pricing'),
             'type'  => 'title',
-            'desc'  => __('Configure the dynamic pricing calculation for listing payments.', 'wc-dynamic-pricing'),
+            'desc'  => $tier_desc,
             'id'    => 'wcdp_settings_section',
-        ],
-        [
-            'title'    => __('Pricing Percentage (%)', 'wc-dynamic-pricing'),
-            'desc'     => __('Percentage of hintapyynto to calculate the price.', 'wc-dynamic-pricing'),
-            'id'       => 'wcdp_pricing_percent',
-            'type'     => 'number',
-            'default'  => WCDP_PRICING_PERCENT,
-            'css'      => 'width: 100px;',
-            'custom_attributes' => [
-                'min'  => '0',
-                'max'  => '100',
-                'step' => '0.1',
-            ],
-        ],
-        [
-            'title'    => __('Minimum Price (EUR)', 'wc-dynamic-pricing'),
-            'desc'     => __('The minimum price regardless of the percentage calculation.', 'wc-dynamic-pricing'),
-            'id'       => 'wcdp_minimum_price',
-            'type'     => 'number',
-            'default'  => WCDP_MINIMUM_PRICE,
-            'css'      => 'width: 100px;',
-            'custom_attributes' => [
-                'min'  => '0',
-                'step' => '1',
-            ],
         ],
         [
             'type' => 'sectionend',
