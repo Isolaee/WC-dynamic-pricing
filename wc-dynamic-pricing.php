@@ -40,6 +40,18 @@ function wcdp_get_pricing_tiers(): array {
 }
 
 /**
+ * Get premium ACF fields from the database.
+ * Returns array of ['field' => string, 'label' => string, 'price' => int].
+ */
+function wcdp_get_premium_fields(): array {
+    $saved = get_option('wcdp_premium_fields');
+    if (!is_array($saved) || empty($saved)) {
+        return [];
+    }
+    return $saved;
+}
+
+/**
  * Log debug messages to WooCommerce > Status > Logs > wcdp-debug.
  */
 function wcdp_log(string $message): void {
@@ -181,6 +193,45 @@ function wcdp_cart_item_price($cart_object) {
 }
 add_action('woocommerce_before_calculate_totals', 'wcdp_cart_item_price', 9999, 1);
 
+/**
+ * Add premium field fees as separate line items in the cart.
+ */
+add_action('woocommerce_cart_calculate_fees', function ($cart) {
+    if (is_admin() && !defined('DOING_AJAX')) {
+        return;
+    }
+
+    $premium_fields = wcdp_get_premium_fields();
+    if (empty($premium_fields)) {
+        return;
+    }
+
+    // Only add fees if a target product is in the cart.
+    $has_target = false;
+    foreach ($cart->get_cart() as $cart_item) {
+        if (in_array((int) $cart_item['product_id'], WCDP_TARGET_PRODUCT_IDS, true)) {
+            $has_target = true;
+            break;
+        }
+    }
+    if (!$has_target) {
+        return;
+    }
+
+    $listing_id = wcdp_get_listing_post_id();
+    if ($listing_id <= 0 || !function_exists('get_field')) {
+        return;
+    }
+
+    foreach ($premium_fields as $pf) {
+        $value = get_field($pf['field'], $listing_id);
+        if (!empty($value)) {
+            $cart->add_fee($pf['label'], (float) $pf['price']);
+            wcdp_log("[premium_fee] Added fee '{$pf['label']}': {$pf['price']}€ (field '{$pf['field']}' is filled on listing {$listing_id})");
+        }
+    }
+}, 9999, 1);
+
 /* =============================================================================
    SESSION CLEANUP — clear bv_pending_post_id after payment or cancellation
 ============================================================================= */
@@ -250,7 +301,7 @@ add_action('woocommerce_settings_tabs_wcdp_settings', function () {
             <tr>
                 <td><input type="number" name="wcdp_tier_threshold[]" value="<?php echo esc_attr($threshold); ?>" min="0" step="1" style="width:100%;" /></td>
                 <td><input type="number" name="wcdp_tier_price[]" value="<?php echo esc_attr($tier_price); ?>" min="0" step="1" style="width:100%;" /></td>
-                <td><a href="#" class="wcdp-remove-tier" style="color:#a00;text-decoration:none;font-size:18px;" title="<?php esc_attr_e('Remove', 'wc-dynamic-pricing'); ?>">&times;</a></td>
+                <td><a href="#" class="wcdp-remove-row" style="color:#a00;text-decoration:none;font-size:18px;" title="<?php esc_attr_e('Remove', 'wc-dynamic-pricing'); ?>">&times;</a></td>
             </tr>
             <?php endforeach; ?>
         </tbody>
@@ -262,7 +313,36 @@ add_action('woocommerce_settings_tabs_wcdp_settings', function () {
             </tr>
         </tfoot>
     </table>
-    <?php wp_nonce_field('wcdp_save_tiers', 'wcdp_tiers_nonce'); ?>
+    <h2><?php esc_html_e('Premium Fields', 'wc-dynamic-pricing'); ?></h2>
+    <p><?php esc_html_e('ACF fields that add an extra fee (separate line item) when filled on the listing.', 'wc-dynamic-pricing'); ?></p>
+    <table class="wc_input_table widefat" id="wcdp-premium-table">
+        <thead>
+            <tr>
+                <th><?php esc_html_e('ACF Field Name', 'wc-dynamic-pricing'); ?></th>
+                <th><?php esc_html_e('Label', 'wc-dynamic-pricing'); ?></th>
+                <th><?php esc_html_e('Price (€)', 'wc-dynamic-pricing'); ?></th>
+                <th style="width:50px;">&nbsp;</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php foreach (wcdp_get_premium_fields() as $pf) : ?>
+            <tr>
+                <td><input type="text" name="wcdp_pf_field[]" value="<?php echo esc_attr($pf['field']); ?>" style="width:100%;" /></td>
+                <td><input type="text" name="wcdp_pf_label[]" value="<?php echo esc_attr($pf['label']); ?>" style="width:100%;" /></td>
+                <td><input type="number" name="wcdp_pf_price[]" value="<?php echo esc_attr($pf['price']); ?>" min="0" step="1" style="width:100%;" /></td>
+                <td><a href="#" class="wcdp-remove-row" style="color:#a00;text-decoration:none;font-size:18px;" title="<?php esc_attr_e('Remove', 'wc-dynamic-pricing'); ?>">&times;</a></td>
+            </tr>
+            <?php endforeach; ?>
+        </tbody>
+        <tfoot>
+            <tr>
+                <td colspan="4">
+                    <a href="#" id="wcdp-add-premium" class="button"><?php esc_html_e('+ Add field', 'wc-dynamic-pricing'); ?></a>
+                </td>
+            </tr>
+        </tfoot>
+    </table>
+    <?php wp_nonce_field('wcdp_save_settings', 'wcdp_settings_nonce'); ?>
     <script>
     jQuery(function($) {
         $('#wcdp-add-tier').on('click', function(e) {
@@ -270,11 +350,21 @@ add_action('woocommerce_settings_tabs_wcdp_settings', function () {
             var row = '<tr>' +
                 '<td><input type="number" name="wcdp_tier_threshold[]" value="0" min="0" step="1" style="width:100%;" /></td>' +
                 '<td><input type="number" name="wcdp_tier_price[]" value="0" min="0" step="1" style="width:100%;" /></td>' +
-                '<td><a href="#" class="wcdp-remove-tier" style="color:#a00;text-decoration:none;font-size:18px;" title="Remove">&times;</a></td>' +
+                '<td><a href="#" class="wcdp-remove-row" style="color:#a00;text-decoration:none;font-size:18px;" title="Remove">&times;</a></td>' +
                 '</tr>';
             $('#wcdp-tiers-table tbody').append(row);
         });
-        $(document).on('click', '.wcdp-remove-tier', function(e) {
+        $('#wcdp-add-premium').on('click', function(e) {
+            e.preventDefault();
+            var row = '<tr>' +
+                '<td><input type="text" name="wcdp_pf_field[]" value="" style="width:100%;" /></td>' +
+                '<td><input type="text" name="wcdp_pf_label[]" value="" style="width:100%;" /></td>' +
+                '<td><input type="number" name="wcdp_pf_price[]" value="0" min="0" step="1" style="width:100%;" /></td>' +
+                '<td><a href="#" class="wcdp-remove-row" style="color:#a00;text-decoration:none;font-size:18px;" title="Remove">&times;</a></td>' +
+                '</tr>';
+            $('#wcdp-premium-table tbody').append(row);
+        });
+        $(document).on('click', '.wcdp-remove-row', function(e) {
             e.preventDefault();
             $(this).closest('tr').remove();
         });
@@ -284,13 +374,14 @@ add_action('woocommerce_settings_tabs_wcdp_settings', function () {
 });
 
 /**
- * Save the pricing tiers when the Dynamic Pricing tab is saved.
+ * Save pricing tiers and premium fields when the Dynamic Pricing tab is saved.
  */
 add_action('woocommerce_update_options_wcdp_settings', function () {
-    if (!isset($_POST['wcdp_tiers_nonce']) || !wp_verify_nonce($_POST['wcdp_tiers_nonce'], 'wcdp_save_tiers')) {
+    if (!isset($_POST['wcdp_settings_nonce']) || !wp_verify_nonce($_POST['wcdp_settings_nonce'], 'wcdp_save_settings')) {
         return;
     }
 
+    // Save pricing tiers.
     $thresholds = isset($_POST['wcdp_tier_threshold']) ? array_map('intval', $_POST['wcdp_tier_threshold']) : [];
     $prices     = isset($_POST['wcdp_tier_price'])     ? array_map('intval', $_POST['wcdp_tier_price'])     : [];
 
@@ -301,9 +392,25 @@ add_action('woocommerce_update_options_wcdp_settings', function () {
         }
         $tiers[] = [max(0, $threshold), max(0, $prices[$i])];
     }
-
-    // Sort by threshold ascending.
     usort($tiers, fn($a, $b) => $a[0] <=> $b[0]);
-
     update_option('wcdp_pricing_tiers', $tiers);
+
+    // Save premium fields.
+    $fields = isset($_POST['wcdp_pf_field']) ? array_map('sanitize_text_field', $_POST['wcdp_pf_field']) : [];
+    $labels = isset($_POST['wcdp_pf_label']) ? array_map('sanitize_text_field', $_POST['wcdp_pf_label']) : [];
+    $pf_prices = isset($_POST['wcdp_pf_price']) ? array_map('intval', $_POST['wcdp_pf_price']) : [];
+
+    $premium = [];
+    foreach ($fields as $i => $field) {
+        $field = trim($field);
+        if ($field === '' || !isset($labels[$i]) || !isset($pf_prices[$i])) {
+            continue;
+        }
+        $premium[] = [
+            'field' => $field,
+            'label' => trim($labels[$i]),
+            'price' => max(0, $pf_prices[$i]),
+        ];
+    }
+    update_option('wcdp_premium_fields', $premium);
 });
