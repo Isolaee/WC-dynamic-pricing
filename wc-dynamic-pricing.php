@@ -9,9 +9,9 @@
 defined('ABSPATH') || exit;
 
 /**
- * Plugin constants — adjust these values as needed.
+ * Plugin constants — defaults used as fallback if no DB option exists.
  */
-define('WCDP_TARGET_PRODUCT_IDS', [773, 2834]); // WooCommerce product IDs for dynamic pricing
+define('WCDP_DEFAULT_PRODUCT_IDS', [773, 2834]);
 
 /**
  * Default step-based pricing tiers (fallback if no DB option exists).
@@ -37,6 +37,17 @@ function wcdp_get_pricing_tiers(): array {
     // Ensure sorted by threshold ascending.
     usort($saved, fn($a, $b) => $a[0] <=> $b[0]);
     return $saved;
+}
+
+/**
+ * Get the target WooCommerce product IDs from the database, falling back to defaults.
+ */
+function wcdp_get_target_product_ids(): array {
+    $saved = get_option('wcdp_target_product_ids');
+    if (!is_array($saved) || empty($saved)) {
+        return WCDP_DEFAULT_PRODUCT_IDS;
+    }
+    return array_map('intval', $saved);
 }
 
 /**
@@ -182,7 +193,7 @@ function wcdp_cart_item_price($cart_object) {
     $calculated = wcdp_calculate_price($hintapyynto);
 
     foreach ($cart_object->get_cart() as $cart_item) {
-        if (!in_array((int) $cart_item['product_id'], WCDP_TARGET_PRODUCT_IDS, true)) {
+        if (!in_array((int) $cart_item['product_id'], wcdp_get_target_product_ids(), true)) {
             continue;
         }
         $cart_item['data']->set_price($calculated);
@@ -209,7 +220,7 @@ add_action('woocommerce_cart_calculate_fees', function ($cart) {
     // Only add fees if a target product is in the cart.
     $has_target = false;
     foreach ($cart->get_cart() as $cart_item) {
-        if (in_array((int) $cart_item['product_id'], WCDP_TARGET_PRODUCT_IDS, true)) {
+        if (in_array((int) $cart_item['product_id'], wcdp_get_target_product_ids(), true)) {
             $has_target = true;
             break;
         }
@@ -261,7 +272,7 @@ add_action('woocommerce_cart_emptied', function () {
 
 add_action('woocommerce_remove_cart_item', function ($cart_item_key, $cart) {
     $item = $cart->get_cart_item($cart_item_key);
-    if ($item && in_array((int) $item['product_id'], WCDP_TARGET_PRODUCT_IDS, true)) {
+    if ($item && in_array((int) $item['product_id'], wcdp_get_target_product_ids(), true)) {
         wcdp_log("[remove_cart_item] Product 773 removed from cart — clearing session.");
         wcdp_clear_session();
     }
@@ -285,7 +296,33 @@ add_filter('woocommerce_settings_tabs_array', function ($tabs) {
  */
 add_action('woocommerce_settings_tabs_wcdp_settings', function () {
     $tiers = wcdp_get_pricing_tiers();
+    $product_ids = wcdp_get_target_product_ids();
     ?>
+    <h2><?php esc_html_e('Target Products', 'wc-dynamic-pricing'); ?></h2>
+    <p><?php esc_html_e('WooCommerce product IDs that use dynamic pricing. Products must have the ACF field "hintapyyntö" on the associated listing.', 'wc-dynamic-pricing'); ?></p>
+    <table class="wc_input_table widefat" id="wcdp-products-table">
+        <thead>
+            <tr>
+                <th><?php esc_html_e('Product ID', 'wc-dynamic-pricing'); ?></th>
+                <th style="width:50px;">&nbsp;</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php foreach ($product_ids as $pid) : ?>
+            <tr>
+                <td><input type="number" name="wcdp_product_ids[]" value="<?php echo esc_attr($pid); ?>" min="1" step="1" style="width:100%;" /></td>
+                <td><a href="#" class="wcdp-remove-row" style="color:#a00;text-decoration:none;font-size:18px;" title="<?php esc_attr_e('Remove', 'wc-dynamic-pricing'); ?>">&times;</a></td>
+            </tr>
+            <?php endforeach; ?>
+        </tbody>
+        <tfoot>
+            <tr>
+                <td colspan="2">
+                    <a href="#" id="wcdp-add-product" class="button"><?php esc_html_e('+ Add product', 'wc-dynamic-pricing'); ?></a>
+                </td>
+            </tr>
+        </tfoot>
+    </table>
     <h2><?php esc_html_e('Step-Based Pricing Tiers', 'wc-dynamic-pricing'); ?></h2>
     <p><?php esc_html_e('Set the price for each hintapyyntö threshold. Price applies when hintapyyntö is at or above the threshold.', 'wc-dynamic-pricing'); ?></p>
     <table class="wc_input_table widefat" id="wcdp-tiers-table">
@@ -345,6 +382,14 @@ add_action('woocommerce_settings_tabs_wcdp_settings', function () {
     <?php wp_nonce_field('wcdp_save_settings', 'wcdp_settings_nonce'); ?>
     <script>
     jQuery(function($) {
+        $('#wcdp-add-product').on('click', function(e) {
+            e.preventDefault();
+            var row = '<tr>' +
+                '<td><input type="number" name="wcdp_product_ids[]" value="" min="1" step="1" style="width:100%;" /></td>' +
+                '<td><a href="#" class="wcdp-remove-row" style="color:#a00;text-decoration:none;font-size:18px;" title="Remove">&times;</a></td>' +
+                '</tr>';
+            $('#wcdp-products-table tbody').append(row);
+        });
         $('#wcdp-add-tier').on('click', function(e) {
             e.preventDefault();
             var row = '<tr>' +
@@ -380,6 +425,11 @@ add_action('woocommerce_update_options_wcdp_settings', function () {
     if (!isset($_POST['wcdp_settings_nonce']) || !wp_verify_nonce($_POST['wcdp_settings_nonce'], 'wcdp_save_settings')) {
         return;
     }
+
+    // Save target product IDs.
+    $product_ids = isset($_POST['wcdp_product_ids']) ? array_map('intval', $_POST['wcdp_product_ids']) : [];
+    $product_ids = array_values(array_filter($product_ids, fn($id) => $id > 0));
+    update_option('wcdp_target_product_ids', $product_ids);
 
     // Save pricing tiers.
     $thresholds = isset($_POST['wcdp_tier_threshold']) ? array_map('intval', $_POST['wcdp_tier_threshold']) : [];
