@@ -1,7 +1,7 @@
 ---
 deployment:
   tasks:
-    - export DEPLOYPATH=/home/growthrocket2/public_html/wp-content/plugins/wc-dynamic-pricing
+    - export DEPLOYPATH=/home/growthrocket/public_html/wp-content/plugins/wc-dynamic-pricing
     - test -d "$(dirname $DEPLOYPATH)" || exit 1
     - mkdir -p $DEPLOYPATH
     - /bin/cp -R * $DEPLOYPATH/
