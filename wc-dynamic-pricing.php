@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WC Dynamic Pricing
- * Description: Step-based pricing for Osaketori-ilmoitus based on ACF field hintapyynto.
- * Version: 3.0.0
+ * Description: Dynamic pricing for Osaketori-ilmoitus based on ACF field "hintaluokka".
+ * Version: 4.0.0
  * Requires Plugins: woocommerce, advanced-custom-fields
  */
 
@@ -12,30 +12,17 @@ defined('ABSPATH') || exit;
  * Plugin constants — defaults used as fallback if no DB option exists.
  */
 define('WCDP_DEFAULT_PRODUCT_IDS', [773, 2834]);
+define('WCDP_HINTALUOKKA_FIELD', 'hintaluokka');
 
 /**
- * Default step-based pricing tiers (fallback if no DB option exists).
- * Each entry: [threshold, price] — sorted ascending by threshold.
+ * Get the hintaluokka price map from the database.
+ * Returns associative array: ['<100 k€' => 0, '100-300k€' => 29, ...].
  */
-define('WCDP_DEFAULT_TIERS', [
-    [0,       0],
-    [100000,  29],
-    [300000,  69],
-    [600000,  129],
-    [1000000, 199],
-]);
-
-/**
- * Get the pricing tiers from the database, falling back to defaults.
- * Returns array of [threshold, price] pairs sorted by threshold ascending.
- */
-function wcdp_get_pricing_tiers(): array {
-    $saved = get_option('wcdp_pricing_tiers');
+function wcdp_get_hintaluokka_prices(): array {
+    $saved = get_option('wcdp_hintaluokka_prices');
     if (!is_array($saved) || empty($saved)) {
-        return WCDP_DEFAULT_TIERS;
+        return [];
     }
-    // Ensure sorted by threshold ascending.
-    usort($saved, fn($a, $b) => $a[0] <=> $b[0]);
     return $saved;
 }
 
@@ -74,16 +61,40 @@ function wcdp_log(string $message): void {
 }
 
 /**
- * Calculate dynamic price based on step-based pricing tiers.
+ * Get all choices defined for the ACF field "hintaluokka".
+ * Returns array of choice values, e.g. ['<100 k€', '100-300k€', ...].
  */
-function wcdp_calculate_price(float $hintapyynto): float {
-    $price = 0;
-    foreach (wcdp_get_pricing_tiers() as [$threshold, $tier_price]) {
-        if ($hintapyynto >= $threshold) {
-            $price = $tier_price;
+function wcdp_get_hintaluokka_choices(): array {
+    if (!function_exists('acf_get_field_groups') || !function_exists('acf_get_fields')) {
+        return [];
+    }
+
+    $groups = acf_get_field_groups();
+    foreach ($groups as $group) {
+        $fields = acf_get_fields($group['key']);
+        if (!is_array($fields)) {
+            continue;
+        }
+        foreach ($fields as $field) {
+            if ($field['name'] === WCDP_HINTALUOKKA_FIELD && !empty($field['choices'])) {
+                // ACF choices can be ['value' => 'label'] — return the values (keys).
+                return array_keys($field['choices']);
+            }
         }
     }
-    return (float) $price;
+
+    return [];
+}
+
+/**
+ * Calculate dynamic price based on hintaluokka value.
+ */
+function wcdp_calculate_price(string $hintaluokka): float {
+    $prices = wcdp_get_hintaluokka_prices();
+    if (isset($prices[$hintaluokka])) {
+        return (float) $prices[$hintaluokka];
+    }
+    return 0.0;
 }
 
 /**
@@ -135,17 +146,18 @@ function wcdp_get_listing_post_id(): int {
 }
 
 /**
- * Read hintapyynto from the listing post.
- * Returns 0.0 if not found or not positive.
+ * Read hintaluokka from the listing post.
+ * Returns empty string if not found.
  */
-function wcdp_get_hintapyynto(int $listing_post_id): float {
+function wcdp_get_hintaluokka(int $listing_post_id): string {
     if ($listing_post_id <= 0) {
-        return 0.0;
+        return '';
     }
     if (!function_exists('get_field')) {
-        return 0.0;
+        return '';
     }
-    return (float) get_field('hintapyynto', $listing_post_id);
+    $value = get_field(WCDP_HINTALUOKKA_FIELD, $listing_post_id);
+    return is_string($value) ? trim($value) : '';
 }
 
 /* =============================================================================
@@ -155,7 +167,7 @@ function wcdp_get_hintapyynto(int $listing_post_id): float {
 ============================================================================= */
 
 /**
- * Override the cart item price for product 773 during cart totals calculation.
+ * Override the cart item price for target products during cart totals calculation.
  * This is the sole pricing hook — product page is never affected.
  */
 function wcdp_cart_item_price($cart_object) {
@@ -178,19 +190,19 @@ function wcdp_cart_item_price($cart_object) {
         return;
     }
 
-    $hintapyynto = wcdp_get_hintapyynto($listing_id);
+    $hintaluokka = wcdp_get_hintaluokka($listing_id);
     if ($should_log) {
-        wcdp_log("[cart_totals] Listing {$listing_id}, hintapyynto: {$hintapyynto}");
+        wcdp_log("[cart_totals] Listing {$listing_id}, hintaluokka: {$hintaluokka}");
     }
 
-    if ($hintapyynto <= 0) {
+    if ($hintaluokka === '') {
         if ($should_log) {
-            wcdp_log("[cart_totals] hintapyynto <= 0, skipping.");
+            wcdp_log("[cart_totals] hintaluokka is empty, skipping.");
         }
         return;
     }
 
-    $calculated = wcdp_calculate_price($hintapyynto);
+    $calculated = wcdp_calculate_price($hintaluokka);
 
     foreach ($cart_object->get_cart() as $cart_item) {
         if (!in_array((int) $cart_item['product_id'], wcdp_get_target_product_ids(), true)) {
@@ -198,7 +210,7 @@ function wcdp_cart_item_price($cart_object) {
         }
         $cart_item['data']->set_price($calculated);
         if ($should_log) {
-            wcdp_log("[cart_totals] Set cart price to {$calculated} for product {$cart_item['product_id']} (listing {$listing_id})");
+            wcdp_log("[cart_totals] Set cart price to {$calculated} for product {$cart_item['product_id']} (listing {$listing_id}, hintaluokka: {$hintaluokka})");
         }
     }
 }
@@ -273,7 +285,7 @@ add_action('woocommerce_cart_emptied', function () {
 add_action('woocommerce_remove_cart_item', function ($cart_item_key, $cart) {
     $item = $cart->get_cart_item($cart_item_key);
     if ($item && in_array((int) $item['product_id'], wcdp_get_target_product_ids(), true)) {
-        wcdp_log("[remove_cart_item] Product 773 removed from cart — clearing session.");
+        wcdp_log("[remove_cart_item] Target product removed from cart — clearing session.");
         wcdp_clear_session();
     }
 }, 10, 2);
@@ -295,11 +307,12 @@ add_filter('woocommerce_settings_tabs_array', function ($tabs) {
  * Output the settings fields for the Dynamic Pricing tab.
  */
 add_action('woocommerce_settings_tabs_wcdp_settings', function () {
-    $tiers = wcdp_get_pricing_tiers();
     $product_ids = wcdp_get_target_product_ids();
+    $choices = wcdp_get_hintaluokka_choices();
+    $prices = wcdp_get_hintaluokka_prices();
     ?>
     <h2><?php esc_html_e('Target Products', 'wc-dynamic-pricing'); ?></h2>
-    <p><?php esc_html_e('WooCommerce product IDs that use dynamic pricing. Products must have the ACF field "hintapyyntö" on the associated listing.', 'wc-dynamic-pricing'); ?></p>
+    <p><?php esc_html_e('WooCommerce product IDs that use dynamic pricing.', 'wc-dynamic-pricing'); ?></p>
     <table class="wc_input_table widefat" id="wcdp-products-table">
         <thead>
             <tr>
@@ -323,33 +336,37 @@ add_action('woocommerce_settings_tabs_wcdp_settings', function () {
             </tr>
         </tfoot>
     </table>
-    <h2><?php esc_html_e('Step-Based Pricing Tiers', 'wc-dynamic-pricing'); ?></h2>
-    <p><?php esc_html_e('Set the price for each hintapyyntö threshold. Price applies when hintapyyntö is at or above the threshold.', 'wc-dynamic-pricing'); ?></p>
-    <table class="wc_input_table widefat" id="wcdp-tiers-table">
-        <thead>
-            <tr>
-                <th><?php esc_html_e('Hintapyyntö from (€)', 'wc-dynamic-pricing'); ?></th>
-                <th><?php esc_html_e('Price (€)', 'wc-dynamic-pricing'); ?></th>
-                <th style="width:50px;">&nbsp;</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php foreach ($tiers as $i => [$threshold, $tier_price]) : ?>
-            <tr>
-                <td><input type="number" name="wcdp_tier_threshold[]" value="<?php echo esc_attr($threshold); ?>" min="0" step="1" style="width:100%;" /></td>
-                <td><input type="number" name="wcdp_tier_price[]" value="<?php echo esc_attr($tier_price); ?>" min="0" step="1" style="width:100%;" /></td>
-                <td><a href="#" class="wcdp-remove-row" style="color:#a00;text-decoration:none;font-size:18px;" title="<?php esc_attr_e('Remove', 'wc-dynamic-pricing'); ?>">&times;</a></td>
-            </tr>
-            <?php endforeach; ?>
-        </tbody>
-        <tfoot>
-            <tr>
-                <td colspan="3">
-                    <a href="#" id="wcdp-add-tier" class="button"><?php esc_html_e('+ Add tier', 'wc-dynamic-pricing'); ?></a>
-                </td>
-            </tr>
-        </tfoot>
-    </table>
+
+    <h2><?php esc_html_e('Hintaluokka Pricing', 'wc-dynamic-pricing'); ?></h2>
+    <?php if (empty($choices)) : ?>
+        <p style="color:#a00;">
+            <?php esc_html_e('Could not find ACF field "hintaluokka" or it has no choices defined. Please create the field first.', 'wc-dynamic-pricing'); ?>
+        </p>
+    <?php else : ?>
+        <p><?php esc_html_e('Set the price for each hintaluokka choice. Choices are fetched automatically from the ACF field definition.', 'wc-dynamic-pricing'); ?></p>
+        <table class="wc_input_table widefat" id="wcdp-hintaluokka-table">
+            <thead>
+                <tr>
+                    <th><?php esc_html_e('Hintaluokka', 'wc-dynamic-pricing'); ?></th>
+                    <th><?php esc_html_e('Price (€)', 'wc-dynamic-pricing'); ?></th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($choices as $choice) : ?>
+                <tr>
+                    <td>
+                        <strong><?php echo esc_html($choice); ?></strong>
+                        <input type="hidden" name="wcdp_hl_choice[]" value="<?php echo esc_attr($choice); ?>" />
+                    </td>
+                    <td>
+                        <input type="number" name="wcdp_hl_price[]" value="<?php echo esc_attr($prices[$choice] ?? 0); ?>" min="0" step="1" style="width:100%;" />
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
+
     <h2><?php esc_html_e('Premium Fields', 'wc-dynamic-pricing'); ?></h2>
     <p><?php esc_html_e('ACF fields that add an extra fee (separate line item) when filled on the listing.', 'wc-dynamic-pricing'); ?></p>
     <table class="wc_input_table widefat" id="wcdp-premium-table">
@@ -390,15 +407,6 @@ add_action('woocommerce_settings_tabs_wcdp_settings', function () {
                 '</tr>';
             $('#wcdp-products-table tbody').append(row);
         });
-        $('#wcdp-add-tier').on('click', function(e) {
-            e.preventDefault();
-            var row = '<tr>' +
-                '<td><input type="number" name="wcdp_tier_threshold[]" value="0" min="0" step="1" style="width:100%;" /></td>' +
-                '<td><input type="number" name="wcdp_tier_price[]" value="0" min="0" step="1" style="width:100%;" /></td>' +
-                '<td><a href="#" class="wcdp-remove-row" style="color:#a00;text-decoration:none;font-size:18px;" title="Remove">&times;</a></td>' +
-                '</tr>';
-            $('#wcdp-tiers-table tbody').append(row);
-        });
         $('#wcdp-add-premium').on('click', function(e) {
             e.preventDefault();
             var row = '<tr>' +
@@ -419,7 +427,7 @@ add_action('woocommerce_settings_tabs_wcdp_settings', function () {
 });
 
 /**
- * Save pricing tiers and premium fields when the Dynamic Pricing tab is saved.
+ * Save settings when the Dynamic Pricing tab is saved.
  */
 add_action('woocommerce_update_options_wcdp_settings', function () {
     if (!isset($_POST['wcdp_settings_nonce']) || !wp_verify_nonce($_POST['wcdp_settings_nonce'], 'wcdp_save_settings')) {
@@ -431,19 +439,19 @@ add_action('woocommerce_update_options_wcdp_settings', function () {
     $product_ids = array_values(array_filter($product_ids, fn($id) => $id > 0));
     update_option('wcdp_target_product_ids', $product_ids);
 
-    // Save pricing tiers.
-    $thresholds = isset($_POST['wcdp_tier_threshold']) ? array_map('intval', $_POST['wcdp_tier_threshold']) : [];
-    $prices     = isset($_POST['wcdp_tier_price'])     ? array_map('intval', $_POST['wcdp_tier_price'])     : [];
+    // Save hintaluokka prices.
+    $hl_choices = isset($_POST['wcdp_hl_choice']) ? array_map('sanitize_text_field', $_POST['wcdp_hl_choice']) : [];
+    $hl_prices  = isset($_POST['wcdp_hl_price'])  ? array_map('intval', $_POST['wcdp_hl_price'])              : [];
 
-    $tiers = [];
-    foreach ($thresholds as $i => $threshold) {
-        if (!isset($prices[$i])) {
+    $hintaluokka_prices = [];
+    foreach ($hl_choices as $i => $choice) {
+        $choice = trim($choice);
+        if ($choice === '' || !isset($hl_prices[$i])) {
             continue;
         }
-        $tiers[] = [max(0, $threshold), max(0, $prices[$i])];
+        $hintaluokka_prices[$choice] = max(0, $hl_prices[$i]);
     }
-    usort($tiers, fn($a, $b) => $a[0] <=> $b[0]);
-    update_option('wcdp_pricing_tiers', $tiers);
+    update_option('wcdp_hintaluokka_prices', $hintaluokka_prices);
 
     // Save premium fields.
     $fields = isset($_POST['wcdp_pf_field']) ? array_map('sanitize_text_field', $_POST['wcdp_pf_field']) : [];
